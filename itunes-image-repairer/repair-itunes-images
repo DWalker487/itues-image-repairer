@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+import argparse
+import eyed3
+import chardet
+import tqdm
+import os
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description='Fix potential issues with iTunes embedded images in mp3 files')
+    parser.add_argument('directory', default='.', type=str,
+                        help='Directory to fix')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Include extra terminal output')
+    args = parser.parse_args()
+    return args
+
+def get_files(directory):
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.endswith(".mp3"):
+                yield os.path.join(root, file)
+
+
+if __name__ == '__main__':
+    args = get_args()
+    if not args.verbose:
+        eyed3.log.setLevel("ERROR")
+
+    pbar = tqdm.tqdm(get_files(args.directory))
+    
+    no_repaired = 0
+
+    for fname in pbar:
+        pbar.set_description(fname)
+        try:
+            x = eyed3.load(fname)
+        except UnicodeDecodeError:
+            continue
+        try:
+            no_embedded_images = len([i for i in x.tag.images])
+        except IndexError as e:
+            continue
+        if no_embedded_images == 1:
+            do_png = True
+            img_type = x.tag.images[0].mime_type
+            encoding = chardet.detect(x.tag.images[0].image_data[:8])['encoding']
+            if encoding is None:
+                do_png = False
+            if img_type == 'image/png' and do_png:
+                if x.tag.images[0].image_data[1:4].decode(encoding=encoding) != 'PNG':
+                    if x.tag.images[0].image_data[2:4].decode(encoding=encoding) == 'PN':
+                        if args.verbose:
+                            print(f"Repairing {fname}")
+                        x.tag.images[0].image_data = bytearray(x.tag.images[0].image_data[1:])
+                        x.tag.save(version=(2,3,0))
+                        no_repaired +=1
+            elif img_type == 'image/jpeg' or img_type == 'image/jpg':
+                if x.tag.images[0].image_data[:4] == b'\x00\xff\xd8\xff':
+                    if args.verbose:
+                        print(f"Repairing {fname}")
+                    x.tag.images[0].image_data = x.tag.images[0].image_data[1:]
+                    x.tag.save(version=(2,3,0))
+                    no_repaired +=1
+
+    print(f"{no_repaired} files repaired")
